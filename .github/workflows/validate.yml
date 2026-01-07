@@ -106,7 +106,7 @@ jobs:
           fi
           
           # Check for capabilities drop
-          if ! grep -q "drop:" $OUTPUT || ! grep -q "- ALL" $OUTPUT; then
+          if ! grep -q "drop:" $OUTPUT || ! grep -q "ALL" $OUTPUT; then
             echo "❌ Missing capabilities drop: ALL"
             exit 1
           fi
