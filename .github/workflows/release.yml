@@ -1,0 +1,119 @@
+name: Release & Tag
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release:
+    name: Create Release and Tag
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for proper versioning
+      
+      - name: Extract version from CHANGELOG
+        id: version
+        run: |
+          # Extract the first unreleased version from CHANGELOG.md
+          # Expected format: ## [v1.2.3] - Unreleased
+          if ! grep -q "\[v.*\] - Unreleased" CHANGELOG.md; then
+            echo "❌ No unreleased version found in CHANGELOG.md"
+            echo "Expected format: ## [v1.2.3] - Unreleased"
+            exit 1
+          fi
+          
+          NEW_VERSION=$(grep -m 1 "\[v.*\] - Unreleased" CHANGELOG.md | sed 's/.*\[\(v[0-9.]*\)\].*/\1/')
+          echo "Found version in CHANGELOG: $NEW_VERSION"
+          
+          # Validate version format
+          if ! [[ "$NEW_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ Invalid version format: $NEW_VERSION"
+            echo "Expected format: v1.2.3"
+            exit 1
+          fi
+          
+          # Get the latest tag
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Latest tag: $LATEST_TAG"
+          
+          # Check if version is newer than latest tag
+          if [ "$NEW_VERSION" = "$LATEST_TAG" ]; then
+            echo "❌ Version $NEW_VERSION already exists as a tag"
+            exit 1
+          fi
+          
+          # Export for next steps
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "previous_version=$LATEST_TAG" >> $GITHUB_OUTPUT
+      
+      - name: Extract release notes from CHANGELOG
+        id: release_notes
+        run: |
+          NEW_TAG="${{ steps.version.outputs.version }}"
+          PREV_TAG="${{ steps.version.outputs.previous_version }}"
+          
+          # Extract content between "## [vX.Y.Z] - Unreleased" and the next "## [" or end of file
+          awk "/## \[${NEW_TAG}\] - Unreleased/,/^## \[/" CHANGELOG.md | 
+            sed '/^## \[/d' | 
+            sed '/^$/d' > release_notes_raw.md
+          
+          # Create formatted release notes
+          cat > release_notes.md << EOF
+          $(cat release_notes_raw.md)
+          
+          ## Usage
+          
+          Reference this version in your service's \`kustomization.yaml\`:
+          
+          \`\`\`yaml
+          resources:
+            - https://github.com/inhousedotcom/in-house-k8s-kustomize-bases//base-deployment?ref=${NEW_TAG}
+          \`\`\`
+          
+          ---
+          
+          **Full Changelog**: https://github.com/inhousedotcom/in-house-k8s-kustomize-bases/compare/${PREV_TAG}...${NEW_TAG}
+          EOF
+          
+          echo "Release notes extracted from CHANGELOG"
+      
+      - name: Create Git tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a ${{ steps.version.outputs.version }} -m "Release ${{ steps.version.outputs.version }}"
+          git push origin ${{ steps.version.outputs.version }}
+      
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Update CHANGELOG to mark as released
+        run: |
+          NEW_TAG="${{ steps.version.outputs.version }}"
+          DATE=$(date +%Y-%m-%d)
+          
+          # Replace "Unreleased" with actual date
+          sed -i "s/\[${NEW_TAG}\] - Unreleased/[${NEW_TAG}] - ${DATE}/" CHANGELOG.md
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "docs: mark ${NEW_TAG} as released [skip ci]"
+          git push origin main

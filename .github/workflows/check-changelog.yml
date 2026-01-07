@@ -1,0 +1,134 @@
+name: Check CHANGELOG
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened, edited]
+
+jobs:
+  check-changelog:
+    name: Verify CHANGELOG Updated
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Check if CHANGELOG.md was modified
+        id: changelog_check
+        run: |
+          # Get list of changed files
+          git fetch origin main
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD)
+          
+          if echo "$CHANGED_FILES" | grep -q "CHANGELOG.md"; then
+            echo "changelog_modified=true" >> $GITHUB_OUTPUT
+            echo "✅ CHANGELOG.md was modified"
+          else
+            echo "changelog_modified=false" >> $GITHUB_OUTPUT
+            echo "❌ CHANGELOG.md was NOT modified"
+          fi
+      
+      - name: Validate CHANGELOG has unreleased version
+        if: steps.changelog_check.outputs.changelog_modified == 'true'
+        run: |
+          if ! grep -q "\[v[0-9]*\.[0-9]*\.[0-9]*\] - Unreleased" CHANGELOG.md; then
+            echo "❌ CHANGELOG.md must contain an unreleased version"
+            echo ""
+            echo "Expected format:"
+            echo "## [v1.2.3] - Unreleased"
+            echo ""
+            echo "### Added"
+            echo "- New feature description"
+            echo ""
+            echo "### Changed"
+            echo "- Changed behavior description"
+            echo ""
+            echo "### Fixed"
+            echo "- Bug fix description"
+            exit 1
+          fi
+          
+          VERSION=$(grep -m 1 "\[v.*\] - Unreleased" CHANGELOG.md | sed 's/.*\[\(v[0-9.]*\)\].*/\1/')
+          echo "✅ Found unreleased version: $VERSION"
+          
+          # Validate version format
+          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ Invalid version format: $VERSION"
+            echo "Expected format: v1.2.3 (semantic versioning)"
+            exit 1
+          fi
+          
+          echo "✅ Version format is valid"
+      
+      - name: Check for version conflicts
+        if: steps.changelog_check.outputs.changelog_modified == 'true'
+        run: |
+          VERSION=$(grep -m 1 "\[v.*\] - Unreleased" CHANGELOG.md | sed 's/.*\[\(v[0-9.]*\)\].*/\1/')
+          
+          # Check if this version already exists as a git tag
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "❌ Version $VERSION already exists as a git tag"
+            echo "Please increment the version number"
+            exit 1
+          fi
+          
+          # Check if version is already marked as released in CHANGELOG
+          if grep -q "\[$VERSION\] - [0-9]" CHANGELOG.md; then
+            echo "❌ Version $VERSION is already marked as released in CHANGELOG"
+            echo "Please use a new version number"
+            exit 1
+          fi
+          
+          echo "✅ No version conflicts found"
+      
+      - name: Require CHANGELOG update
+        if: steps.changelog_check.outputs.changelog_modified == 'false'
+        run: |
+          echo "## ❌ CHANGELOG Not Updated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "This PR must update CHANGELOG.md with an unreleased version entry." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Required Format" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`markdown" >> $GITHUB_STEP_SUMMARY
+          echo "## [v1.2.3] - Unreleased" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Added" >> $GITHUB_STEP_SUMMARY
+          echo "- New base deployment template with improved security defaults" >> $GITHUB_STEP_SUMMARY
+          echo "- Support for horizontal pod autoscaling" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Changed" >> $GITHUB_STEP_SUMMARY
+          echo "- Updated resource limits for better performance" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Fixed" >> $GITHUB_STEP_SUMMARY
+          echo "- Fixed issue with label propagation" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Version Number Guidelines" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Use semantic versioning (MAJOR.MINOR.PATCH):" >> $GITHUB_STEP_SUMMARY
+          echo "- **MAJOR**: Breaking changes (v1.0.0 → v2.0.0)" >> $GITHUB_STEP_SUMMARY
+          echo "- **MINOR**: New features, backward compatible (v1.0.0 → v1.1.0)" >> $GITHUB_STEP_SUMMARY
+          echo "- **PATCH**: Bug fixes, backward compatible (v1.0.0 → v1.0.1)" >> $GITHUB_STEP_SUMMARY
+          
+          exit 1
+      
+      - name: Success summary
+        if: steps.changelog_check.outputs.changelog_modified == 'true'
+        run: |
+          VERSION=$(grep -m 1 "\[v.*\] - Unreleased" CHANGELOG.md | sed 's/.*\[\(v[0-9.]*\)\].*/\1/')
+          
+          echo "## ✅ CHANGELOG Validated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Version **$VERSION** will be released when this PR is merged to main." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### What happens next?" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "1. PR gets merged to main" >> $GITHUB_STEP_SUMMARY
+          echo "2. GitHub Actions automatically creates git tag: \`$VERSION\`" >> $GITHUB_STEP_SUMMARY
+          echo "3. GitHub Release is created with notes from CHANGELOG" >> $GITHUB_STEP_SUMMARY
+          echo "4. CHANGELOG.md is updated to mark version as released with date" >> $GITHUB_STEP_SUMMARY

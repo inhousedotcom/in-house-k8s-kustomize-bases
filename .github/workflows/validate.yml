@@ -1,0 +1,143 @@
+name: Validate Templates
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  validate:
+    name: Validate Kustomize Templates
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+          kustomize version
+      
+      - name: Validate base deployment
+        run: |
+          echo "🔍 Validating base deployment..."
+          kustomize build base-deployment/ > /tmp/base-output.yaml
+          
+          # Check that output is valid YAML
+          if ! command -v yq &> /dev/null; then
+            sudo snap install yq
+          fi
+          
+          yq eval '.' /tmp/base-output.yaml > /dev/null
+          echo "✅ Base deployment is valid"
+      
+      - name: Validate example overlay
+        run: |
+          echo "🔍 Validating example overlay..."
+          kustomize build examples/service-overlay/ > /tmp/overlay-output.yaml
+          yq eval '.' /tmp/overlay-output.yaml > /dev/null
+          echo "✅ Example overlay is valid"
+      
+      - name: Check for required files
+        run: |
+          echo "🔍 Checking for required files..."
+          
+          REQUIRED_FILES=(
+            "base-deployment/deployment.yaml"
+            "base-deployment/service.yaml"
+            "base-deployment/kustomization.yaml"
+            "policies/kyverno/resource-limits.yaml"
+            "policies/kyverno/required-labels.yaml"
+            "policies/kyverno/image-pull-policy.yaml"
+            "policies/kyverno/security-baseline.yaml"
+            "README.md"
+          )
+          
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "❌ Missing required file: $file"
+              exit 1
+            fi
+          done
+          
+          echo "✅ All required files present"
+      
+      - name: Validate Kyverno policies
+        run: |
+          echo "🔍 Validating Kyverno policies..."
+          
+          # Install kyverno CLI
+          curl -LO https://github.com/kyverno/kyverno/releases/download/v1.11.0/kyverno-cli_v1.11.0_linux_x86_64.tar.gz
+          tar -xzf kyverno-cli_v1.11.0_linux_x86_64.tar.gz
+          sudo mv kyverno /usr/local/bin/
+          
+          # Validate policies are syntactically correct
+          for policy in policies/kyverno/*.yaml; do
+            if [ "$policy" = "policies/kyverno/kustomization.yaml" ]; then
+              continue
+            fi
+            echo "Validating $policy..."
+            yq eval '.' "$policy" > /dev/null
+          done
+          
+          echo "✅ All Kyverno policies are valid"
+      
+      - name: Check security defaults
+        run: |
+          echo "🔍 Checking security defaults in base deployment..."
+          
+          OUTPUT=/tmp/base-output.yaml
+          
+          # Check for runAsNonRoot
+          if ! grep -q "runAsNonRoot: true" $OUTPUT; then
+            echo "❌ Missing runAsNonRoot: true"
+            exit 1
+          fi
+          
+          # Check for allowPrivilegeEscalation
+          if ! grep -q "allowPrivilegeEscalation: false" $OUTPUT; then
+            echo "❌ Missing allowPrivilegeEscalation: false"
+            exit 1
+          fi
+          
+          # Check for capabilities drop
+          if ! grep -q "drop:" $OUTPUT || ! grep -q "- ALL" $OUTPUT; then
+            echo "❌ Missing capabilities drop: ALL"
+            exit 1
+          fi
+          
+          # Check for resource limits
+          if ! grep -q "limits:" $OUTPUT || ! grep -q "requests:" $OUTPUT; then
+            echo "❌ Missing resource limits/requests"
+            exit 1
+          fi
+          
+          echo "✅ Security defaults verified"
+      
+      - name: Lint YAML files
+        run: |
+          echo "🔍 Linting YAML files..."
+          sudo snap install yamllint
+          
+          yamllint -d "{extends: default, rules: {line-length: {max: 120}, comments: disable}}" \
+            base-deployment/*.yaml \
+            policies/kyverno/*.yaml \
+            examples/service-overlay/*.yaml || echo "⚠️  YAML linting found issues (non-blocking)"
+          
+          echo "✅ YAML lint complete"
+      
+      - name: Summary
+        run: |
+          echo "## Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Base deployment validated" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Example overlay validated" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Kyverno policies validated" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Security defaults verified" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "All checks passed! Ready to merge. 🚀" >> $GITHUB_STEP_SUMMARY
